@@ -1,12 +1,18 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useCallback, useEffect } from 'react';
 import {
   Activity,
   BarChart3,
   FileText,
   Heart,
   FlaskConical,
+  Download,
+  Upload,
+  Volume2,
+  VolumeX,
+  X,
 } from 'lucide-react';
 import useWebSocket from './hooks/useWebSocket';
+import { API_BASE } from './hooks/useWebSocket';
 import PricePanel from './components/PricePanel';
 import SignalPanel from './components/SignalPanel';
 import PositionPanel from './components/PositionPanel';
@@ -15,12 +21,12 @@ import TradesPanel from './components/TradesPanel';
 import HealthPanel from './components/HealthPanel';
 import BacktestPanel from './components/BacktestPanel';
 
-const STRATEGIES = [
+const TEMPLATES = [
+  { id: 'latency_arbitrage', label: 'Latency Arbitrage' },
   { id: 'mean_reversion', label: 'Mean Reversion' },
   { id: 'momentum', label: 'Momentum' },
-  { id: 'arbitrage', label: 'Cross-Exchange Arb' },
-  { id: 'polymarket_edge', label: 'Polymarket Edge' },
-  { id: 'custom', label: 'Custom' },
+  { id: 'combined', label: 'Combined' },
+  { id: 'blank', label: 'Blank' },
 ];
 
 const BOTTOM_TABS = [
@@ -43,8 +49,8 @@ function pnlClass(value) {
   return 'neutral';
 }
 
-function SignalLog({ logs }) {
-  const entries = logs || [];
+function SignalLog({ signals }) {
+  const entries = signals || [];
   if (entries.length === 0) {
     return (
       <div className="empty-state" style={{ padding: 24 }}>
@@ -55,52 +61,258 @@ function SignalLog({ logs }) {
 
   return (
     <div>
-      {entries.map((entry, i) => (
-        <div className="log-entry" key={i}>
-          <span className="log-time">{entry.time || '--:--:--'}</span>
-          <span className={`log-level-${entry.level || 'info'}`} style={{ fontWeight: 600, minWidth: 44 }}>
-            [{(entry.level || 'INFO').toUpperCase()}]
-          </span>
-          <span className="log-message">{entry.message || ''}</span>
-        </div>
-      ))}
+      {entries.map((entry, i) => {
+        const time = entry.timestamp
+          ? new Date(entry.timestamp * 1000).toLocaleTimeString()
+          : '--:--:--';
+        return (
+          <div className="log-entry" key={entry.id || i}>
+            <span className="log-time">{time}</span>
+            <span
+              className={`log-level-${entry.direction || 'info'}`}
+              style={{ fontWeight: 600, minWidth: 44 }}
+            >
+              [{(entry.rule_name || entry.direction || 'INFO').toUpperCase()}]
+            </span>
+            <span className="log-message">
+              {entry.explanation ||
+                `${entry.asset} ${entry.direction} - ${entry.side} @ confidence ${entry.confidence}`}
+            </span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function ToastNotification({ toast, onDismiss }) {
+  if (!toast) return null;
+
+  const isError = toast.type === 'error';
+
+  return (
+    <div
+      style={{
+        position: 'fixed',
+        top: 60,
+        right: 20,
+        zIndex: 9999,
+        padding: '10px 16px',
+        borderRadius: 6,
+        fontSize: 13,
+        fontWeight: 500,
+        display: 'flex',
+        alignItems: 'center',
+        gap: 8,
+        boxShadow: '0 4px 12px rgba(0,0,0,0.4)',
+        background: isError
+          ? 'rgba(248, 81, 73, 0.15)'
+          : 'rgba(63, 185, 80, 0.15)',
+        border: `1px solid ${
+          isError ? 'rgba(248, 81, 73, 0.4)' : 'rgba(63, 185, 80, 0.4)'
+        }`,
+        color: isError ? '#f85149' : '#3fb950',
+        animation: 'fadeIn 0.2s ease-in',
+      }}
+    >
+      <span>{toast.message}</span>
+      <button
+        onClick={onDismiss}
+        style={{
+          background: 'none',
+          border: 'none',
+          color: 'inherit',
+          cursor: 'pointer',
+          padding: 0,
+          display: 'flex',
+        }}
+      >
+        <X size={14} />
+      </button>
     </div>
   );
 }
 
 export default function App() {
-  const { state, status } = useWebSocket('ws://localhost:8000/ws');
+  const { state, status } = useWebSocket();
   const [bottomTab, setBottomTab] = useState('trades');
+  const [toast, setToast] = useState(null);
+  const [soundEnabled, setSoundEnabled] = useState(true);
+  const toastTimerRef = useRef(null);
+  const fileInputRef = useRef(null);
+  const prevSignalCountRef = useRef(0);
 
-  const mode = state.mode || state.strategy_config?.execution?.mode || 'paper';
+  // Derive mode from strategy.execution_mode
+  const mode = state.strategy?.execution_mode || 'paper';
   const isPaper = mode !== 'live';
-  const pnl = state.pnl || {};
+  const strategyName = state.strategy?.name || 'Strategy';
+  const templateId = state.strategy?.template || 'combined';
 
-  const handleStrategyChange = async (e) => {
-    const strategy = e.target.value;
+  // --- Toast helpers ---
+
+  const showToast = useCallback((message, type = 'success') => {
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    setToast({ message, type });
+    toastTimerRef.current = setTimeout(() => setToast(null), 4000);
+  }, []);
+
+  const dismissToast = useCallback(() => {
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    setToast(null);
+  }, []);
+
+  // --- Sound notification on new signals ---
+
+  useEffect(() => {
+    const currentCount = (state.signals || []).length;
+    if (
+      soundEnabled &&
+      currentCount > prevSignalCountRef.current &&
+      prevSignalCountRef.current >= 0
+    ) {
+      try {
+        const ctx = new (window.AudioContext || window.webkitAudioContext)();
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.frequency.value = 880;
+        gain.gain.value = 0.1;
+        osc.start();
+        osc.stop(ctx.currentTime + 0.15);
+      } catch {
+        // Audio not available
+      }
+    }
+    prevSignalCountRef.current = currentCount;
+  }, [state.signals, soundEnabled]);
+
+  // --- API handlers ---
+
+  const handleTemplateChange = async (e) => {
+    const template = e.target.value;
     try {
-      await fetch('/api/strategy/select', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ strategy }),
-      });
+      const resp = await fetch(
+        `${API_BASE}/api/strategy/template/${template}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+        }
+      );
+      if (!resp.ok) {
+        const body = await resp.text();
+        throw new Error(body || `Failed to load template (${resp.status})`);
+      }
+      showToast(`Loaded template: ${template}`);
     } catch (err) {
-      console.error('Failed to change strategy:', err);
+      console.error('Failed to load template:', err);
+      showToast(err.message, 'error');
     }
   };
+
+  const handleExportStrategy = async () => {
+    try {
+      const resp = await fetch(`${API_BASE}/api/strategy/export`);
+      if (!resp.ok) {
+        throw new Error(`Export failed (${resp.status})`);
+      }
+      const data = await resp.json();
+      const blob = new Blob([JSON.stringify(data, null, 2)], {
+        type: 'application/json',
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `strategy_${strategyName
+        .replace(/\s+/g, '_')
+        .toLowerCase()}_${Date.now()}.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      showToast('Strategy exported');
+    } catch (err) {
+      console.error('Export error:', err);
+      showToast(err.message, 'error');
+    }
+  };
+
+  const handleImportStrategy = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    try {
+      const text = await file.text();
+      const config = JSON.parse(text);
+      const resp = await fetch(`${API_BASE}/api/strategy/import`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(config),
+      });
+      if (!resp.ok) {
+        const body = await resp.text();
+        throw new Error(body || `Import failed (${resp.status})`);
+      }
+      showToast('Strategy imported');
+    } catch (err) {
+      console.error('Import error:', err);
+      showToast(err.message, 'error');
+    } finally {
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+  };
+
+  const handleExecuteSignal = async (signalId) => {
+    try {
+      const resp = await fetch(`${API_BASE}/api/signals/execute`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ signal_id: signalId }),
+      });
+      if (!resp.ok) {
+        const body = await resp.text();
+        throw new Error(body || `Execute failed (${resp.status})`);
+      }
+      showToast('Signal executed');
+    } catch (err) {
+      console.error('Execute signal error:', err);
+      showToast(err.message, 'error');
+    }
+  };
+
+  const handleClosePosition = async (positionId) => {
+    try {
+      const resp = await fetch(`${API_BASE}/api/positions/close`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ position_id: positionId }),
+      });
+      if (!resp.ok) {
+        const body = await resp.text();
+        throw new Error(body || `Close failed (${resp.status})`);
+      }
+      showToast('Position closed');
+    } catch (err) {
+      console.error('Close position error:', err);
+      showToast(err.message, 'error');
+    }
+  };
+
+  // --- Bottom tab rendering ---
 
   const renderBottomContent = () => {
     switch (bottomTab) {
       case 'trades':
-        return <TradesPanel trades={state.trades} pnlHistory={state.pnl_history} />;
+        return <TradesPanel trades={state.recent_trades} />;
       case 'pnl':
-        return <TradesPanel trades={[]} pnlHistory={state.pnl_history} />;
+        return <TradesPanel trades={[]} />;
       case 'log':
-        return <SignalLog logs={state.signal_log} />;
+        return <SignalLog signals={state.signals} />;
       case 'health':
-        return <HealthPanel health={state.health} />;
+        return <HealthPanel system={state.system} />;
       case 'backtest':
-        return <BacktestPanel />;
+        return (
+          <BacktestPanel strategy={state.strategy} showToast={showToast} />
+        );
       default:
         return null;
     }
@@ -108,6 +320,18 @@ export default function App() {
 
   return (
     <div className="app">
+      {/* Toast Notifications */}
+      <ToastNotification toast={toast} onDismiss={dismissToast} />
+
+      {/* Hidden file input for strategy import */}
+      <input
+        type="file"
+        ref={fileInputRef}
+        accept=".json"
+        style={{ display: 'none' }}
+        onChange={handleImportStrategy}
+      />
+
       {/* Mode Banner */}
       <div className={`mode-banner ${isPaper ? 'paper' : 'live'}`}>
         {isPaper
@@ -121,43 +345,105 @@ export default function App() {
           <span className="logo">Goystein Bot</span>
           <select
             className="strategy-select"
-            value={state.strategy || 'mean_reversion'}
-            onChange={handleStrategyChange}
+            value={templateId}
+            onChange={handleTemplateChange}
           >
-            {STRATEGIES.map((s) => (
-              <option key={s.id} value={s.id}>
-                {s.label}
+            {TEMPLATES.map((t) => (
+              <option key={t.id} value={t.id}>
+                {t.label}
               </option>
             ))}
           </select>
+          <button
+            className="btn btn-outline btn-sm"
+            onClick={handleExportStrategy}
+            title="Export strategy config"
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 4,
+            }}
+          >
+            <Download size={12} />
+            Save
+          </button>
+          <button
+            className="btn btn-outline btn-sm"
+            onClick={() => fileInputRef.current?.click()}
+            title="Import strategy config"
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 4,
+            }}
+          >
+            <Upload size={12} />
+            Load
+          </button>
         </div>
 
         <div className="top-bar-center">
           <div className="metric">
-            <span className="metric-label">Total P&L</span>
-            <span className={`metric-value ${pnlClass(pnl.total)}`}>
-              {formatPnl(pnl.total)}
+            <span className="metric-label">Strategy</span>
+            <span className="metric-value neutral">{strategyName}</span>
+          </div>
+          <div className="metric">
+            <span className="metric-label">P&L Today</span>
+            <span className={`metric-value ${pnlClass(state.pnl_today)}`}>
+              {formatPnl(state.pnl_today)}
             </span>
           </div>
           <div className="metric">
-            <span className="metric-label">Today</span>
-            <span className={`metric-value ${pnlClass(pnl.today)}`}>
-              {formatPnl(pnl.today)}
+            <span className="metric-label">P&L Total</span>
+            <span className={`metric-value ${pnlClass(state.pnl_total)}`}>
+              {formatPnl(state.pnl_total)}
             </span>
           </div>
           <div className="metric">
             <span className="metric-label">Win Rate</span>
-            <span className={`metric-value ${(pnl.win_rate || 0) >= 0.5 ? 'positive' : 'negative'}`}>
-              {((pnl.win_rate || 0) * 100).toFixed(1)}%
+            <span
+              className={`metric-value ${
+                (state.win_rate || 0) >= 0.5 ? 'positive' : 'negative'
+              }`}
+            >
+              {((state.win_rate || 0) * 100).toFixed(1)}%
             </span>
           </div>
           <div className="metric">
             <span className="metric-label">Trades</span>
-            <span className="metric-value neutral">{pnl.trades_count || 0}</span>
+            <span className="metric-value neutral">
+              {state.total_trades || 0}
+            </span>
+          </div>
+          <div className="metric">
+            <span className="metric-label">Balance</span>
+            <span className="metric-value neutral">
+              $
+              {(state.balance || 0).toLocaleString(undefined, {
+                minimumFractionDigits: 2,
+                maximumFractionDigits: 2,
+              })}
+            </span>
           </div>
         </div>
 
         <div className="top-bar-right">
+          <button
+            className="btn btn-outline btn-sm"
+            onClick={() => setSoundEnabled((prev) => !prev)}
+            title={
+              soundEnabled
+                ? 'Mute notifications'
+                : 'Enable sound notifications'
+            }
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              padding: '4px 8px',
+            }}
+          >
+            {soundEnabled ? <Volume2 size={14} /> : <VolumeX size={14} />}
+          </button>
           <div className="ws-status">
             <span
               className={`ws-dot ${
@@ -193,23 +479,30 @@ export default function App() {
 
       {/* Dashboard Grid */}
       <div className="dashboard-grid with-banner">
-        {/* Left Panel: Prices */}
+        {/* Left Panel: Prices + Markets */}
         <PricePanel
           prices={state.prices}
-          polymarket={state.polymarket}
-          divergence={state.divergence}
+          markets={state.markets}
+          priceChanges={state.price_changes}
+          indicators={state.indicators}
         />
 
         {/* Center Panel: Signals + Positions */}
         <div className="panel center-panel">
-          <SignalPanel signals={state.signals} />
+          <SignalPanel
+            signals={state.signals}
+            onExecute={handleExecuteSignal}
+          />
           <div style={{ borderTop: '1px solid #30363d' }}>
-            <PositionPanel positions={state.positions} />
+            <PositionPanel
+              positions={state.positions}
+              onClose={handleClosePosition}
+            />
           </div>
         </div>
 
         {/* Right Panel: Strategy Config */}
-        <StrategyPanel config={state.strategy_config} />
+        <StrategyPanel config={state.strategy} showToast={showToast} />
 
         {/* Bottom Panel: Trades, Charts, Logs, Health, Backtest */}
         <div className="panel bottom-panel">
@@ -222,7 +515,10 @@ export default function App() {
                   className={`tab ${bottomTab === tab.id ? 'active' : ''}`}
                   onClick={() => setBottomTab(tab.id)}
                 >
-                  <Icon size={12} style={{ marginRight: 4, verticalAlign: 'middle' }} />
+                  <Icon
+                    size={12}
+                    style={{ marginRight: 4, verticalAlign: 'middle' }}
+                  />
                   {tab.label}
                 </button>
               );
