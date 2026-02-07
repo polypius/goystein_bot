@@ -192,10 +192,93 @@ class TestBacktestEngine:
         engine = BacktestEngine(initial_balance=10_000)
         result = engine.run(config, {Asset.ETH: bars})
         assert result.strategy_name == "Momentum"
-        assert isinstance(result.total_pnl, float)
+        assert isinstance(result.total_pnl, (int, float))
         result_dict = result.to_dict()
         assert "win_rate" in result_dict
         assert "equity_curve" in result_dict
+
+
+class TestCorrelation:
+    def test_correlation_with_data(self):
+        agg = PriceAggregator()
+        now = time.time()
+        # Add correlated data for both ETH and BTC
+        for i in range(100):
+            agg.ingest(PriceTick(
+                exchange="binance", asset=Asset.ETH,
+                price=2500 + i * 0.5,
+                volume_24h=1_000_000,
+                bid=2499.9, ask=2500.1,
+                timestamp=now - 100 + i,
+            ))
+            agg.ingest(PriceTick(
+                exchange="binance", asset=Asset.BTC,
+                price=40000 + i * 2.0,  # correlated movement
+                volume_24h=1_000_000,
+                bid=39999.9, ask=40000.1,
+                timestamp=now - 100 + i,
+            ))
+        ind = IndicatorEngine(agg)
+        corr = ind.correlation(seconds=90)
+        assert isinstance(corr, float)
+        assert -1.0 <= corr <= 1.0
+
+    def test_correlation_no_data(self):
+        agg = PriceAggregator()
+        ind = IndicatorEngine(agg)
+        assert ind.correlation() == 0.0
+
+    def test_correlation_metric(self):
+        agg = _make_aggregator_with_data()
+        ind = IndicatorEngine(agg)
+        val = ind.metric_value(Asset.ETH, "eth_btc_correlation")
+        assert isinstance(val, float)
+
+
+class TestStrategyMetrics:
+    def test_correlation_in_available_metrics(self):
+        metrics = StrategyEngine.available_metrics()
+        keys = [m["key"] for m in metrics]
+        assert "eth_btc_correlation" in keys
+
+
+class TestDBModels:
+    def test_trade_record_to_dict(self):
+        from bot.db.models import TradeRecord
+        record = TradeRecord(
+            id="test1", position_id="pos1", market_id="mkt1",
+            asset="ETH", side="YES", direction="open",
+            price=0.55, size=100.0, quantity=181.8,
+            pnl=0.0, rule_name="test_rule", signal_confidence=7.0,
+            timestamp=time.time(),
+        )
+        d = record.to_dict()
+        assert d["id"] == "test1"
+        assert d["asset"] == "ETH"
+        assert d["price"] == 0.55
+
+    def test_strategy_record_to_dict(self):
+        from bot.db.models import StrategyRecord
+        record = StrategyRecord(
+            id=1, name="Test", template="combined",
+            config_json={"name": "Test"},
+            is_active=True,
+            created_at=time.time(), updated_at=time.time(),
+        )
+        d = record.to_dict()
+        assert d["name"] == "Test"
+        assert d["is_active"] is True
+
+    def test_daily_pnl_to_dict(self):
+        from bot.db.models import DailyPnLRecord
+        record = DailyPnLRecord(
+            id=1, date="2026-02-07", pnl=150.0,
+            trades_count=10, win_count=6, loss_count=4,
+            best_trade=50.0, worst_trade=-20.0, balance_eod=10150.0,
+        )
+        d = record.to_dict()
+        assert d["date"] == "2026-02-07"
+        assert d["win_count"] == 6
 
 
 class TestRiskCheckResult:

@@ -300,6 +300,7 @@ class DashboardState:
     win_rate: float = 0.0
     total_trades: int = 0
     balance: float = 10_000.0
+    eth_btc_correlation: float = 0.0
     system: SystemStatus = field(default_factory=SystemStatus)
     timestamp: float = field(default_factory=time.time)
 

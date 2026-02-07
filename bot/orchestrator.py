@@ -202,6 +202,7 @@ class Orchestrator:
             win_rate=self.position_mgr.win_rate,
             total_trades=self.position_mgr.total_closed_trades,
             balance=self.position_mgr.balance,
+            eth_btc_correlation=self.indicators.correlation(),
             system=SystemStatus(
                 exchange_feeds=self.aggregator.get_healths(),
                 polymarket=self.polymarket.health,

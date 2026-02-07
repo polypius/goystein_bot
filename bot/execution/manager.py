@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 import uuid
 
@@ -14,6 +15,21 @@ from bot.models import (
 from bot.polymarket.executor import PolymarketExecutor
 
 logger = structlog.get_logger()
+
+
+async def _persist_trade(trade: Trade, balance: float) -> None:
+    """Save trade to database (best-effort, non-blocking)."""
+    try:
+        from bot.db.repository import TradeRepository, DailyPnLRepository
+        await TradeRepository.save_trade(trade)
+        if trade.direction == "close":
+            await DailyPnLRepository.update_today(
+                pnl_delta=trade.pnl,
+                is_win=trade.pnl > 0,
+                balance=balance,
+            )
+    except Exception:
+        logger.debug("db_persist_skipped", reason="database not available")
 
 
 class PositionManager:
@@ -67,6 +83,7 @@ class PositionManager:
         self.trades.append(trade)
         self.balance -= size
         self._last_trade_time = time.time()
+        asyncio.create_task(_persist_trade(trade, self.balance))
         logger.info(
             "position_opened",
             id=pos_id,
@@ -121,6 +138,7 @@ class PositionManager:
         self.daily_pnl += pnl
         self.peak_balance = max(self.peak_balance, self.balance)
         self.trades.append(trade)
+        asyncio.create_task(_persist_trade(trade, self.balance))
 
         logger.info(
             "position_closed",

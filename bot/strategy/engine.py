@@ -137,6 +137,7 @@ class StrategyEngine:
             "volatility_5m", "volatility_15m",
             "sma_5m", "sma_15m", "sma_1h",
             "rsi", "spread", "vwap",
+            "eth_btc_correlation",
         ]:
             ctx[metric] = self._ind.metric_value(asset, metric)
 
@@ -218,6 +219,7 @@ class StrategyEngine:
             {"key": "time_remaining", "label": "Time remaining", "unit": "min"},
             {"key": "divergence", "label": "Price-odds divergence", "unit": "%"},
             {"key": "implied_prob", "label": "Implied probability", "unit": ""},
+            {"key": "eth_btc_correlation", "label": "ETH/BTC correlation", "unit": ""},
         ]
 
     @staticmethod

@@ -21,6 +21,14 @@ logger = structlog.get_logger()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Start the orchestrator when the server starts."""
+    # Initialize database tables
+    try:
+        from bot.db.database import init_db
+        await init_db()
+        logger.info("database_initialized")
+    except Exception:
+        logger.warning("database_init_skipped", reason="DB not available, running in-memory only")
+
     orch = Orchestrator()
     set_orchestrator(orch)
     app.state.orchestrator = orch

@@ -425,6 +425,14 @@ export default function App() {
               })}
             </span>
           </div>
+          {state.eth_btc_correlation != null && (
+            <div className="metric">
+              <span className="metric-label">ETH/BTC Corr</span>
+              <span className={`metric-value ${Math.abs(state.eth_btc_correlation) > 0.7 ? 'positive' : 'neutral'}`}>
+                {(state.eth_btc_correlation || 0).toFixed(3)}
+              </span>
+            </div>
+          )}
         </div>
 
         <div className="top-bar-right">

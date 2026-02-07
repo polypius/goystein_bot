@@ -237,3 +237,64 @@ async def health_check() -> dict:
     state = orch.snapshot()
     sys = state.to_dict()["system"]
     return {"status": "ok", "system": sys}
+
+
+# ------------------------------------------------------------------
+# Database-backed history
+# ------------------------------------------------------------------
+
+@router.get("/api/trades/history")
+async def trade_history(limit: int = 50) -> list[dict]:
+    try:
+        from bot.db.repository import TradeRepository
+        return await TradeRepository.get_recent(limit)
+    except Exception:
+        return []
+
+
+@router.get("/api/trades/summary")
+async def trades_summary() -> dict:
+    try:
+        from bot.db.repository import TradeRepository
+        return await TradeRepository.get_closed_trades_summary()
+    except Exception:
+        return {"total": 0, "wins": 0, "losses": 0, "total_pnl": 0.0, "win_rate": 0.0}
+
+
+@router.get("/api/pnl/history")
+async def pnl_history(days: int = 30) -> list[dict]:
+    try:
+        from bot.db.repository import DailyPnLRepository
+        return await DailyPnLRepository.get_history(days)
+    except Exception:
+        return []
+
+
+@router.get("/api/strategies/saved")
+async def list_saved_strategies() -> list[dict]:
+    try:
+        from bot.db.repository import StrategyRepository
+        return await StrategyRepository.list_strategies()
+    except Exception:
+        return []
+
+
+@router.post("/api/strategies/save")
+async def save_strategy() -> dict:
+    orch = _get_orch()
+    try:
+        from bot.db.repository import StrategyRepository
+        sid = await StrategyRepository.save_strategy(orch.strategy_config)
+        return {"status": "ok", "id": sid}
+    except Exception as e:
+        raise HTTPException(500, f"Failed to save: {e}")
+
+
+@router.get("/api/correlation")
+async def get_correlation() -> dict:
+    orch = _get_orch()
+    corr = orch.indicators.correlation()
+    return {
+        "eth_btc_correlation": round(corr, 4),
+        "description": "Pearson correlation of ETH and BTC 5-min returns",
+    }
